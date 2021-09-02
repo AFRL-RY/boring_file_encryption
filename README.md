@@ -43,7 +43,8 @@ Then use the command:
 sudo dpkg -i bfe_1.2_amd64.deb
 ```
 
-Change the version number 1.2 as needed for your installation.  
+Change the version number 1.2 as needed for your installation. bfe will
+be installed in /usr/local/bin/bfe.
 
 ## Building BoringSSL
 
