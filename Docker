@@ -1,0 +1,92 @@
+# Small container used to build the FIPS 140-2 Boring Crypto Library and Boring File Encryption Driver
+# The dependencies are spelled out in section 12.1:
+#      https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp3318.pdf
+#
+# To build container:
+#	nohup docker image build -f Docker -t boring_file_encryption:1.2 . > ~/temp/boring_file_encryption.log 2>&1 &
+#
+# to run container:
+#   docker run -it --rm --mount type=bind,source=/home/rovitotv/,target=/home/rovitotv boring_file_encryption:1.2
+#
+FROM ubuntu:20.04
+
+MAINTAINER todd.rovito@afresearchlab.com
+
+# set locale setting inside of Docker container
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive TZ=America/New_York apt-get install -y locales \
+    && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && dpkg-reconfigure --frontend=noninteractive locales \
+    && update-locale LANG=en_US.UTF-8
+ENV LANG en_US.UTF-8
+ENV LC_ALL en_US.UTF-8
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=America/New_York apt-get install -y \
+	curl \
+    wget \
+	vim \
+	bzip2 \
+	git \
+	zip \
+	unzip \
+    clang \
+    ninja-build \
+    golang  \
+    cmake \
+    cmake-curses-gui \
+    iputils-ping \
+    build-essential \
+    devscripts \
+    debhelper
+    
+RUN apt-get update
+RUN apt-get upgrade -y
+
+# build boringSSL Library
+WORKDIR /tmp
+RUN curl -o boringssl.tar.xz https://commondatastorage.googleapis.com/chromium-boringssl-docs/fips/boringssl-66005f41fbc3529ffe8d007708756720529da20d.tar.xz
+RUN tar xf boringssl.tar.xz
+WORKDIR /tmp/boringssl
+RUN printf "set(CMAKE_C_COMPILER \"clang\")\nset(CMAKE_CXX_COMPILER \"clang++\")\n" > ${HOME}/toolchain
+RUN ls -l
+RUN pwd
+RUN sed -i '/set(C_CXX_FLAGS "${C_CXX_FLAGS} -Wimplicit-fallthrough")/s/^/#/' CMakeLists.txt
+RUN mkdir build && cd build && cmake -GNinja -DCMAKE_TOOLCHAIN_FILE=${HOME}/toolchain -DFIPS=1 -DCMAKE_BUILD_TYPE=Release ..
+WORKDIR /tmp/boringssl/build
+RUN ninja
+RUN ./tool/bssl isfips
+
+# build boring_file_encryption driver program
+WORKDIR /tmp
+RUN mkdir boring_file_encryption
+COPY bfe.c /tmp/boring_file_encryption
+COPY CMakeLists.txt /tmp/boring_file_encryption
+COPY README.md /tmp/boring_file_encryption
+COPY Docker /tmp/boring_file_encryption
+WORKDIR /tmp/boring_file_encryption
+RUN mkdir build
+WORKDIR  /tmp/boring_file_encryption/build
+RUN cmake ..
+RUN make
+RUN make test
+RUN make install
+
+# make the debian binary package
+WORKDIR /tmp
+RUN mkdir -p debpkgs/bfe_1.2_amd64/DEBIAN
+RUN mkdir -p debpkgs/bfe_1.2_amd64/usr/local/bin
+RUN cp /tmp/boring_file_encryption/build/bfe ./debpkgs/bfe_1.2_amd64/usr/local/bin/
+RUN touch debpkgs/bfe_1.2_amd64/DEBIAN/control
+RUN echo "Package: bfe" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Version: 1.2" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Architecture: amd64" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Essential: no" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Priority: optional" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Depends: curl" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Maintainer: Todd V. Rovito" >> debpkgs/bfe_1.2_amd64/DEBIAN/control \
+    && echo "Description: Boring File Encryption (bfe) is a simple C program which essentially drives the BoringSSL library to encrypt/decrypt files at the FIPS 140-2 level." >> debpkgs/bfe_1.2_amd64/DEBIAN/control
+RUN dpkg-deb --build /tmp/debpkgs/bfe_1.2_amd64
+RUN ls -la /tmp/debpkgs
+
+# change directory to the place where bfe is installed
+WORKDIR /usr/local/bin
